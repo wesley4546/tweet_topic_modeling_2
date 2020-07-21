@@ -1,0 +1,341 @@
+---
+title: "STM Topic modeling"
+prepared_documentsput: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(stm)
+library(lubridate)
+library(purrr)
+library(ggplot2)
+library(tidyr)
+library(patchwork)
+
+source(here::here("R", "new_data_cleaning.R"))
+```
+
+
+## Cleaning & Wrangling Data
+
+```{r Reading Data}
+# Reads in the raw_data
+data <- get_raw_data()
+
+# Removes any URLS or non-alphabet characters
+cleaned_data <-
+  get_unique_tweets(data) %>%
+  mutate(tweet_text = remove_urls(tweet_text)) %>%
+  mutate(tweet_text = remove_non_alphabet_characters(tweet_text))
+```
+
+#### What does `get_unique_tweets` do?
+
+Good question! What it does is take all the tweets, retweets, and quoted text and 
+remove any EXACT duplicates. 
+
+Allow me to show you what I mean:
+
+Below is an example of:
+
+* A user tweeting
+* A user retweeting without any commentary
+* A user retweeting with commentary
+* A user retweeting a retweet with commentary
+
+| date | tweet | retweet | quoted | user |
+|------|-------|---------|--------|------|
+| 04/25 | I love Icecream   | NA | NA | wesley4546 |
+| 04/26 | RT @wesley4546 I love Icecream | I love Icecream  |  NA |  coolguy123  |
+| 04/28 | RT @wesley4546 I love Icecream | I love Icecream  | Dude me too!  | radlad456   |
+| 04/28 | RT @radlad456 Dude me too! | Dude me too! | No way! | nicesun789 |
+
+If I keep everything, I get:
+
+* "I love Icecream" x5
+* "Dude me too" x3
+
+If I `get_unique_tweets()`, I get:
+
+* "I love Icecream" x1
+* "Dude me too!" x1
+
+Now the question is: What do I keep and what do I remove?
+
+```{r Ugly Cleaning, echo=FALSE}
+
+# Pattern for removing anything after 2 digits
+pattern <- "([[:digit:]])([[:digit:]]).*"
+replacement <- "\\1\\2"
+
+cleaned_data <-
+  cleaned_data %>%
+  mutate(tweet_created_at = gsub(
+    x = tweet_created_at,
+    pattern = pattern,
+    replacement = replacement
+  ))
+
+# Removes day of the week
+pattern <- "(Sat|Sun|Mon|Tue|Wed|Thu|Fri)"
+replacement <- ""
+
+cleaned_data <-
+  cleaned_data %>%
+  mutate(tweet_created_at = gsub(
+    x = tweet_created_at,
+    pattern = pattern,
+    replacement = replacement
+  ))
+
+# adds year to the column and changes format
+cleaned_data <-
+  cleaned_data %>%
+  mutate(tweet_created_at = (paste("2020", tweet_created_at, sep = ""))) %>%
+  mutate(tweet_created_at = gsub(
+    x = tweet_created_at,
+    pattern = "Mar",
+    replacement = "03"
+  )) %>%
+  mutate(tweet_created_at = gsub(
+    x = tweet_created_at,
+    pattern = "Apr",
+    replacement = "04"
+  )) %>%
+  mutate(tweet_created_at = ymd(`tweet_created_at`))
+```
+
+#### Stopwords
+
+I used Dr. Hagen's stop words and some of my own.
+
+```{r Getting Stopwords}
+# Reads in the stopwords
+custom_stopwords <-
+  get_hagen_stopwords() %>%
+  bind_rows(get_wesley_stopwords())
+
+DT::datatable(custom_stopwords)
+```
+
+## Ingesting
+
+Here we can use `stm`'s `textProcessor()` function to tokenize our data.
+
+```{r textProcessor, echo=TRUE}
+# Processes the text
+processed <-
+  textProcessor(
+    documents = cleaned_data$tweet_text,
+    stem = FALSE,
+    removestopwords = FALSE,
+    customstopwords = custom_stopwords$word,
+    metadata = cleaned_data
+  )
+```
+
+Now that I have my data tokenized, I can use `stm`'s `prepDocuments()` function that will remove empty documents, get a count of tokens, terms, and documents, and other things.
+
+```{r prepDocuments}
+# Preps documents
+prepared_documents <-
+  prepDocuments(
+    processed$documents,
+    processed$vocab,
+    processed$meta,
+  )
+
+# Assigns the different outputs to more convenient variables
+docs <- prepared_documents$documents
+vocab <- prepared_documents$vocab
+meta <- prepared_documents$meta
+```
+
+```{r searchK, eval=FALSE, include=FALSE}
+# Not run
+tictoc::tic()
+
+range_of_topics <- seq(5, 40, 5)
+
+findingk <-
+  searchK(
+    documents = prepared_documents$documents,
+    vocab = prepared_documents$vocab,
+    K = range_of_topics,
+    data = meta
+  )
+
+tictoc::toc()
+
+model_metrics <- plot(findingk)
+```
+
+## Evaluate
+
+We can start to evaluate the model. 
+
+I've already ran the metrics so we don't have to run the whole process again.
+
+```{r Stemming Model Metrics, echo=FALSE}
+knitr::include_graphics(here::here("output", "nonstemmed_model_metrics.png"))
+```
+
+From here we can see a model of 30 seems to be best.
+
+## Estimate
+
+With the number of topics selected, its time we run out model.
+
+```{r stm - the actual model, echo=TRUE}
+total_topics <- 30
+
+topic_model <-
+  stm(
+    documents = prepared_documents$documents, vocab = prepared_documents$vocab,
+    K = total_topics,
+    data = prepared_documents$meta,
+    init.type = "Spectral",
+    verbose = FALSE,
+    seed = 1234
+  )
+```
+
+## Assigning Topic to Documents
+
+Since `stm` removes some documents, we have to make sure that is reflected within our data.
+```{r Finding the saved documents}
+# Get the indices of the removed documents of prepped
+index_docs_removed <-
+  append(
+    processed[["docs.removed"]],
+    prepared_documents[["docs.removed"]]
+  )
+
+# apply them
+saved_documents <- cleaned_data[-index_docs_removed, ]
+```
+
+Now that I have the model, I have to assign each document their respective topic label.
+
+```{r Labeling documents with topics}
+# The matrix responsible for having the theta value of each document to the topics
+doc_topic_matrix <- topic_model[["theta"]]
+
+# Function that finds the `which.max()` topic value for each document
+label_documents_with_topics <- function(doc_topic_matrix) {
+
+  # Blank dataframe to append to
+  out_dataframe <-
+    data.frame(
+      document = integer(),
+      topic = integer()
+    )
+
+  # Iterates and which.max()'s them
+  for (row in seq_len(nrow(doc_topic_matrix))) {
+    topic_label <- which.max(doc_topic_matrix[row, ])
+
+    labeled_document <-
+      data.frame(
+        document = row,
+        topic = topic_label
+      )
+
+    out_dataframe <-
+      rbind(out_dataframe, labeled_document)
+  }
+  return(out_dataframe)
+}
+
+# Labels the documents
+labeled_documents <- label_documents_with_topics(doc_topic_matrix)
+
+# Gets a count of the number of topics
+count_lab_doc <-
+  labeled_documents %>%
+  count(topic)
+
+# Histogram of topic assignment
+topic_hist <-
+  count_lab_doc %>%
+  ggplot(aes(x = topic, y = n)) +
+  geom_col() +
+  labs(
+    title = "Distribution of Topics",
+    x = "Topic",
+    y = "# of Documents"
+  )
+topic_hist
+```
+
+The next step is to apply those labels to the documents themselves so we can see how topics changes over time.
+
+```{r, fig.height=10, fig.width=20}
+# Adds a document number
+saved_documents <-
+  saved_documents %>%
+  mutate(document = row_number())
+
+# Joins the labeling to the tweets
+labeled_documentstweets <-
+  saved_documents %>%
+  left_join(labeled_documents, by = "document")
+
+# Counts the number of topics
+counted_topics <-
+  labeled_documentstweets %>%
+  group_by(tweet_created_at) %>%
+  count(topic)
+
+# Creates the `daily_prop` column to look at the topic proportion
+counted_topics <-
+  counted_topics %>%
+  mutate(days_sum = sum(n)) %>%
+  mutate(daily_prop = (n / days_sum))
+
+# Graphs the topics over
+temporal_topics_plot <-
+  counted_topics %>%
+  ggplot(
+    aes(
+      x = tweet_created_at, y = daily_prop,
+      group = topic,
+      color = as.factor(topic)
+    )
+  ) +
+  geom_line() +
+  facet_wrap(~topic) +
+  theme(legend.position = "none") +
+  labs(
+    title = "Topics over Time",
+    x = "Date",
+    y = "Daily Proportion"
+  )
+
+# tidy format for the beta measurement
+td_beta <- tidytext::tidy(topic_model)
+
+# visualize the topics
+topic_graph <-
+  td_beta %>%
+  group_by(topic) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(term = reorder(term, beta)) %>% # ordering it by their beta rank
+  ggplot(aes(term, beta, fill = as.factor(topic))) + # plotting it
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~topic, scales = "free") + # by topic
+  coord_flip() +
+  labs(
+    title = "Spectral Topic Model",
+    x = "",
+    y = ""
+  )
+
+
+temporal_topics_plot
+topic_graph
+
+library(patchwork)
+duo <- temporal_topics_plot + topic_graph
+```
