@@ -233,7 +233,7 @@ library(patchwork)
 duo_plot <- temporal_topics_plot + topic_graph
 ```
 
-```{r}
+```{r Plotting tweets over time}
 dist_tweets_oneday <- 
   labeled_documentstweets %>% 
   count(created_at, name = "number_of_tweets") %>% 
@@ -258,7 +258,7 @@ dist_tweets_sevday <-
   )
 ```
 
-```{r Saving Plots}
+```{r Saving Plots, eval=FALSE}
 save_plot <- function(plot, h, w, extension){
   
 ggsave(
@@ -296,5 +296,77 @@ save_plot(dist_tweets_sevday,
           extension = ".png")
 ```
 
+```{r Understanding Each Topic, eval=FALSE}
+topic_number = 1
+
+understanding_top <- 
+  labeled_documentstweets %>% 
+  filter(topic == topic_number) %>% 
+  select(complete_texts)
+  
+
+
+top_15 <- 
+  td_beta %>%
+  group_by(topic) %>%
+  top_n(15) %>% 
+  filter(topic == topic_number) %>% 
+  arrange(-beta)
+  
+sampled_tweets <- sample(understanding_top[["complete_texts"]], 20)
+
+top_15$term %>% 
+  datapasta::vector_paste()
+
+generate_things <- function(total_topics, beta_df, df_labeled_tweets){
+  
+  out_df <- data.frame(
+    topic = integer(),
+    topterms = character(),
+    sampled_tweets = character()
+  )
+  
+for(i in seq_len(29)){
+  
+  # Top 20 words
+  top_20 <- 
+    beta_df %>%
+    group_by(topic) %>%
+    top_n(20) %>% 
+    filter(topic == i) %>% 
+    arrange(-beta)
+  
+  # 20 Examples
+  understanding_top <- 
+    df_labeled_tweets %>% 
+    filter(topic == i) %>% 
+    select(complete_texts)
+  
+  sampled_tweets <- sample(understanding_top[["complete_texts"]], 20)
+  
+  topic_df <-
+    data.frame(
+      topterms = top_20$term,
+      sampled_tweets = sampled_tweets
+    )
+  
+  topic_df$topic = i
+  
+  out_df <-
+    rbind(out_df,topic_df)
+  
+  print(paste("Topic",i," done..."))
+  
+}
+  
+ return(out_df) 
+  
+}
+
+generated_things <- generate_things(30, td_beta, labeled_documentstweets)
+
+save(list = ls(), file = "topic_model.rda")
+
+```
 
 

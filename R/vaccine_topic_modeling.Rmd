@@ -1,0 +1,388 @@
+---
+title: "vaccine_topic_modeling"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source(here::here("R", "cleaning_functions.R"))
+library(stm)
+library(dplyr)
+library(janitor)
+```
+
+```{r Cleaning and Wrangling Data, include=FALSE}
+raw_data <-
+  read.csv(here::here("data", "vaccine_tweets2.csv")) %>%
+  clean_names() %>%
+  select(
+    created_at,
+    complete_text
+  )
+
+pattern <- "RT @*"
+
+cleaned_data <-
+  raw_data %>%
+  mutate(
+    complete_text = gsub(pattern = pattern, replacement = "", x = complete_text)
+  ) %>%
+  rename(complete_texts = complete_text)
+
+cleaned_data <-
+  cleaned_data %>%
+  mutate(complete_texts = remove_urls(complete_texts)) %>%
+  mutate(complete_texts = remove_non_alphabet_characters(complete_texts))
+
+
+# Pattern for removing anything after 2 digits
+pattern <- "([[:digit:]])([[:digit:]]).*"
+replacement <- "\\1\\2"
+
+cleaned_data <-
+  cleaned_data %>%
+  mutate(created_at = gsub(x = created_at, pattern = pattern, replacement = replacement))
+
+# Removes day of the week
+pattern <- "(Sat|Sun|Mon|Tue|Wed|Thu|Fri)"
+replacement <- ""
+
+cleaned_data <-
+  cleaned_data %>%
+  mutate(created_at = gsub(x = created_at, pattern = pattern, replacement = replacement))
+
+# adds year to the column and changes format
+cleaned_data <-
+  cleaned_data %>%
+  mutate(created_at = (paste("2020", created_at, sep = ""))) %>%
+  mutate(created_at = gsub(x = created_at, pattern = "Mar", replacement = "03")) %>%
+  mutate(created_at = gsub(x = created_at, pattern = "Apr", replacement = "04")) %>%
+  mutate(created_at = ymd(`created_at`))
+
+# Gets stopwords
+custom_stopwords <-
+  get_hagen_stopwords() %>%
+  bind_rows(get_wesley_stopwords())
+```
+
+```{r Processing Text for Topic Modeling, include=FALSE}
+# Processes the text
+processed <-
+  textProcessor(
+    documents = cleaned_data$complete_texts,
+    stem = FALSE,
+    removestopwords = FALSE,
+    customstopwords = custom_stopwords$word,
+    metadata = cleaned_data
+  )
+
+# Prepares documents for topic modeling
+prepared_documents <-
+  prepDocuments(processed$documents, processed$vocab, processed$meta)
+
+# Assigns the different outputs to more convenient variables
+docs <- prepared_documents$documents
+vocab <- prepared_documents$vocab
+meta <- prepared_documents$meta
+```
+
+```{r Findingk Process, include=FALSE, eval=FALSE}
+tictoc::tic()
+
+range_of_topics <- seq(15, 60, 5)
+
+findingk <-
+  searchK(
+    documents = prepared_documents$documents,
+    vocab = prepared_documents$vocab,
+    K = range_of_topics,
+    data = meta
+  )
+
+tictoc::toc()
+
+model_metrics <- (plot(findingk))
+
+save(list = ls(), file = here::here("output", "findingk.rda"))
+```
+
+```{r Selecting the model, include=FALSE}
+total_topics <- 30
+
+topic_model <-
+  stm(
+    documents = prepared_documents$documents, vocab = prepared_documents$vocab,
+    K = total_topics,
+    data = prepared_documents$meta,
+    init.type = "Spectral",
+    verbose = TRUE,
+    seed = 1234,
+   max.em.its = 150 
+  )
+
+```
+
+```{r Finding the saved documents}
+# Get the indices of the removed documents of prepped
+index_docs_removed <-
+  append(
+    processed[["docs.removed"]],
+    prepared_documents[["docs.removed"]]
+  )
+
+# apply them
+saved_documents <- cleaned_data[-index_docs_removed, ]
+```
+
+```{r Labeling documents with topics}
+# The matrix responsible for having the theta value of each document to the topics
+doc_topic_matrix <- topic_model[["theta"]]
+
+# Function that finds the `which.max()` topic value for each document
+label_documents_with_topics <- function(doc_topic_matrix) {
+
+  # Blank dataframe to append to
+  out_dataframe <-
+    data.frame(
+      document = integer(),
+      topic = integer()
+    )
+
+  # Iterates and which.max()'s them
+  for (row in seq_len(nrow(doc_topic_matrix))) {
+    topic_label <- which.max(doc_topic_matrix[row, ])
+
+    labeled_document <-
+      data.frame(
+        document = row,
+        topic = topic_label
+      )
+
+    out_dataframe <-
+      rbind(out_dataframe, labeled_document)
+  }
+  return(out_dataframe)
+}
+
+# Labels the documents
+labeled_documents <- label_documents_with_topics(doc_topic_matrix)
+
+# Gets a count of the number of topics
+count_lab_doc <-
+  labeled_documents %>%
+  count(topic)
+
+# Histogram of topic assignment
+topic_hist <-
+  count_lab_doc %>%
+  ggplot(aes(x = topic, y = n)) +
+  geom_col() +
+  labs(
+    title = "Distribution of Topics",
+    x = "Topic",
+    y = "# of Documents"
+  )
+```
+
+The next step is to apply those labels to the documents themselves so we can see how topics changes over time.
+
+```{r, fig.height=10, fig.width=20}
+# Adds a document number
+saved_documents <-
+  saved_documents %>%
+  mutate(document = row_number())
+
+# Joins the labeling to the tweets
+labeled_documentstweets <-
+  saved_documents %>%
+  left_join(labeled_documents, by = "document")
+
+# Counts the number of topics
+counted_topics <-
+  labeled_documentstweets %>%
+  group_by(created_at) %>%
+  count(topic)
+
+# Creates the `daily_prop` column to look at the topic proportion
+counted_topics <-
+  counted_topics %>%
+  mutate(days_sum = sum(n)) %>%
+  mutate(daily_prop = (n / days_sum))
+
+# Graphs the topics over
+temporal_topics_plot <-
+  counted_topics %>%
+  ggplot(
+    aes(
+      x = created_at, y = daily_prop,
+      group = topic,
+      color = as.factor(topic)
+    )
+  ) +
+  geom_line() +
+  facet_wrap(~topic) +
+  theme(legend.position = "none") +
+  labs(
+    title = "Topics over Time",
+    x = "Date",
+    y = "Daily Proportion"
+  )
+
+# tidy format for the beta measurement
+td_beta <- tidytext::tidy(topic_model)
+
+# visualize the topics
+topic_graph <-
+  td_beta %>%
+  group_by(topic) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(term = reorder(term, beta)) %>% # ordering it by their beta rank
+  ggplot(aes(term, beta, fill = as.factor(topic))) + # plotting it
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~topic, scales = "free") + # by topic
+  coord_flip() +
+  labs(
+    title = "Spectral Topic Model",
+    x = "",
+    y = ""
+  )
+
+library(patchwork)
+duo_plot <- temporal_topics_plot + topic_graph
+```
+
+```{r Plotting tweets over time}
+dist_tweets_oneday <-
+  labeled_documentstweets %>%
+  count(created_at, name = "number_of_tweets") %>%
+  ggplot(aes(x = created_at, y = number_of_tweets)) +
+  geom_col() +
+  labs(
+    title = "Number of Tweets over Time",
+    subtitle = "Each bar represents one day",
+    x = "",
+    y = "Number of Tweets"
+  )
+
+dist_tweets_sevday <-
+  labeled_documentstweets %>%
+  ggplot(aes(x = created_at)) +
+  geom_histogram(binwidth = 7) +
+  labs(
+    title = "Number of Tweets over Time",
+    subtitle = "Each bar represents seven days",
+    x = "",
+    y = "Number of Tweets"
+  )
+```
+
+```{r Saving Plots, eval=FALSE}
+save_plot <- function(plot, h, w, extension) {
+  ggsave(
+    filename = here::here("output", "graphs", "vaccine", paste0(deparse(substitute(plot)), extension)),
+    plot = plot,
+    width = w,
+    height = h
+  )
+}
+
+save_plot(temporal_topics_plot,
+  h = 10,
+  w = 15,
+  extension = ".png"
+)
+
+save_plot(topic_graph,
+  h = 10,
+  w = 15,
+  extension = ".png"
+)
+
+save_plot(duo_plot,
+  h = 10,
+  w = 20,
+  extension = ".png"
+)
+
+save_plot(dist_tweets_oneday,
+  h = 10,
+  w = 15,
+  extension = ".png"
+)
+
+save_plot(dist_tweets_sevday,
+  h = 10,
+  w = 15,
+  extension = ".png"
+)
+```
+
+```{r Understanding Each Topic, eval=FALSE}
+topic_number <- 1
+
+understanding_top <-
+  labeled_documentstweets %>%
+  filter(topic == topic_number) %>%
+  select(complete_texts)
+
+
+
+top_15 <-
+  td_beta %>%
+  group_by(topic) %>%
+  top_n(15) %>%
+  filter(topic == topic_number) %>%
+  arrange(-beta)
+
+sampled_tweets <- sample(understanding_top[["complete_texts"]], 20)
+
+top_15$term %>%
+  datapasta::vector_paste()
+
+generate_things <- function(total_topics, beta_df, df_labeled_tweets) {
+  out_df <- data.frame(
+    topic = integer(),
+    topterms = character(),
+    sampled_tweets = character()
+  )
+
+  for (i in seq_len(29)) {
+
+    # Top 20 words
+    top_20 <-
+      beta_df %>%
+      group_by(topic) %>%
+      top_n(20) %>%
+      filter(topic == i) %>%
+      arrange(-beta)
+
+    # 20 Examples
+    understanding_top <-
+      df_labeled_tweets %>%
+      filter(topic == i) %>%
+      select(complete_texts)
+
+    sampled_tweets <- sample(understanding_top[["complete_texts"]], 20)
+
+    topic_df <-
+      data.frame(
+        topterms = top_20$term,
+        sampled_tweets = sampled_tweets
+      )
+
+    topic_df$topic <- i
+
+    out_df <-
+      rbind(out_df, topic_df)
+
+    print(paste("Topic", i, " done..."))
+  }
+
+  return(out_df)
+}
+
+generated_things <- generate_things(30, td_beta, labeled_documentstweets)
+
+save(list = ls(), file = "vaccine_topic_model.rda")
+```

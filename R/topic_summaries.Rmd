@@ -1,0 +1,58 @@
+---
+title: "Topic Summaries"
+author: "Wesley Gardiner"
+date: 7/22/2020
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    theme: sandstone
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+load(here::here("data", "RDA Data", "topic_model.rda"))
+```
+
+# Introduction
+
+Presented are the topics found, the top 15 words (weighted by beta value) for each topic, and 20 examples from the topic.
+
+# Topic Graph
+
+```{r, fig.height=10, fig.width=12, echo=FALSE}
+topic_graph
+```
+
+***
+
+# Topic 1
+
+```{r echo=FALSE}
+topic_number = 1
+
+understanding_top <- 
+  labeled_documentstweets %>% 
+  filter(topic == topic_number) %>% 
+  select(complete_texts)
+
+top_15 <- 
+  td_beta %>%
+  group_by(topic) %>%
+  top_n(15) %>% 
+  filter(topic == topic_number) %>% 
+  arrange(-beta)
+  
+sampled_tweets <- sample(understanding_top[["complete_texts"]], 20)
+top_15
+sampled_tweets
+```
+
+## Summary of Topic 1
+
+From the tweets I found, there's a lot to do with China, Trump, and the corona virus. Some tweets appear to be news headlines. Seems to be a general-topic of the whole pandemic.
+
+***
