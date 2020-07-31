@@ -250,6 +250,8 @@ topic_graph <-
 
 library(patchwork)
 duo_plot <- temporal_topics_plot + topic_graph
+
+save(list = ls(), file = here::here("data","RDA Data", "vaccine_topic_modeling_data.rda"))
 ```
 
 ```{r Plotting tweets over time}
