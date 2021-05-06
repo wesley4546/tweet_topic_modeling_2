@@ -43,6 +43,7 @@ remove_non_alphabet_characters <- function(tweet_text) {
 }
 
 get_hagen_stopwords <- function() {
+  
   # Gets the stopwords from Dr. Hagen's txt
   hagen_stopwords <-
     read.table(
@@ -63,6 +64,7 @@ get_hagen_stopwords <- function() {
 }
 
 get_wesley_stopwords <- function() {
+  
   # Gets the keywords used in collecting
   stopwords <-
     read.table(

@@ -304,8 +304,6 @@ understanding_top <-
   filter(topic == topic_number) %>% 
   select(complete_texts)
   
-
-
 top_15 <- 
   td_beta %>%
   group_by(topic) %>%
